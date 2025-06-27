@@ -1313,101 +1313,106 @@ private Object getWeatherHandler(Level level) {
     
     
     
-    /**
-     * CRITICAL FIX: Clean up tornado data to prevent massive lists and duplicates
-     */
-    public void performMaintenanceCleanup() {
-        long currentTime = System.currentTimeMillis();
-        int initialCount = trackedTornadoes.size();
-        
-        // Step 1: Remove obvious duplicates (same position, same time)
-        Map<String, List<TornadoData>> positionGroups = new HashMap<>();
-        
-        for (TornadoData tornado : new ArrayList<>(trackedTornadoes.values())) {
-            if (!tornado.getPositionHistory().isEmpty()) {
-                Vec3 firstPos = tornado.getPositionHistory().get(0).position;
-                long firstTime = tornado.getPositionHistory().get(0).timestamp;
-                
-                // Create a key based on rounded position and time window
-                String key = String.format("%.0f_%.0f_%.0f_%d", 
-                    Math.round(firstPos.x / 10) * 10,
-                    Math.round(firstPos.y / 10) * 10, 
-                    Math.round(firstPos.z / 10) * 10,
-                    firstTime / 60000); // 1-minute time windows
-                    
-                positionGroups.computeIfAbsent(key, k -> new ArrayList<>()).add(tornado);
-            }
-        }
-        
-        // Step 2: For each position group with multiple tornadoes, keep only the best one
-        int duplicatesRemoved = 0;
-        for (List<TornadoData> group : positionGroups.values()) {
-            if (group.size() > 1) {
-                // Sort by: 1) Active status, 2) Has survey data, 3) Position history length, 4) Max windspeed
-                group.sort((a, b) -> {
-                    if (a.isActive() && !b.isActive()) return -1;
-                    if (!a.isActive() && b.isActive()) return 1;
-                    
-                    if (a.isSurveyed() && !b.isSurveyed()) return -1;
-                    if (!a.isSurveyed() && b.isSurveyed()) return 1;
-                    
-                    int posCountDiff = b.getPositionHistory().size() - a.getPositionHistory().size();
-                    if (posCountDiff != 0) return posCountDiff;
-                    
-                    return Integer.compare(b.getMaxWindspeed(), a.getMaxWindspeed());
-                });
-                
-                // Keep the first (best) tornado, remove the rest
-                TornadoData keepTornado = group.get(0);
-                for (int i = 1; i < group.size(); i++) {
-                    TornadoData removeTornado = group.get(i);
-                    trackedTornadoes.remove(removeTornado.getId());
-                    duplicatesRemoved++;
-                    
-                    EASAddon.LOGGER.debug("Removed duplicate tornado {} (keeping {})", 
-                                        removeTornado.getId(), keepTornado.getId());
-                }
-            }
-        }
-        
-        // Step 3: Remove tornadoes with excessive position history (path length sanity check)
-        int excessiveHistoryRemoved = 0;
-        for (TornadoData tornado : new ArrayList<>(trackedTornadoes.values())) {
-            List<TornadoData.PositionRecord> history = tornado.getPositionHistory();
+/**
+ * CRITICAL FIX: Clean up tornado data to prevent massive lists and duplicates
+ * FIXED: Completely avoid String formatting to prevent crashes
+ */
+public void performMaintenanceCleanup() {
+    long currentTime = System.currentTimeMillis();
+    int initialCount = trackedTornadoes.size();
+    
+    // Step 1: Remove obvious duplicates (same position, same time)
+    Map<String, List<TornadoData>> positionGroups = new HashMap<>();
+    
+    for (TornadoData tornado : new ArrayList<>(trackedTornadoes.values())) {
+        if (!tornado.getPositionHistory().isEmpty()) {
+            Vec3 firstPos = tornado.getPositionHistory().get(0).position;
+            long firstTime = tornado.getPositionHistory().get(0).timestamp;
             
-            // If tornado has more than 1000 position records or path length > 50km, it's probably corrupt
-            if (history.size() > 1000 || tornado.getTotalPathLength() > 50000) {
-                trackedTornadoes.remove(tornado.getId());
-                excessiveHistoryRemoved++;
-                
-                EASAddon.LOGGER.warn("Removed tornado {} with excessive data: {} positions, {:.1f}km path", 
-                                   tornado.getId(), history.size(), tornado.getTotalPathLength() / 1000.0);
-            }
-        }
-        
-        // Step 4: Remove very old inactive tornadoes (older than 1 hour)
-        int oldTornadoesRemoved = 0;
-        for (TornadoData tornado : new ArrayList<>(trackedTornadoes.values())) {
-            if (!tornado.isActive() && (currentTime - tornado.getLastSeenTime()) > 3600000) { // 1 hour
-                trackedTornadoes.remove(tornado.getId());
-                oldTornadoesRemoved++;
-            }
-        }
-        
-        int finalCount = trackedTornadoes.size();
-        int totalRemoved = initialCount - finalCount;
-        
-        if (totalRemoved > 0) {
-            EASAddon.LOGGER.info("Maintenance cleanup completed: {} -> {} tornadoes ({} removed)", 
-                               initialCount, finalCount, totalRemoved);
-            EASAddon.LOGGER.info("  Duplicates removed: {}", duplicatesRemoved);
-            EASAddon.LOGGER.info("  Excessive history removed: {}", excessiveHistoryRemoved);
-            EASAddon.LOGGER.info("  Old inactive removed: {}", oldTornadoesRemoved);
+            // FIXED: Create a key using simple concatenation instead of String.format
+            // This avoids all potential formatting issues
+            long roundedX = Math.round(firstPos.x / 10) * 10;
+            long roundedY = Math.round(firstPos.y / 10) * 10;
+            long roundedZ = Math.round(firstPos.z / 10) * 10;
+            long timeWindow = firstTime / 60000; // 1-minute time windows
             
-            // Force save after cleanup
-            forceSave();
+            String key = roundedX + "_" + roundedY + "_" + roundedZ + "_" + timeWindow;
+                
+            positionGroups.computeIfAbsent(key, k -> new ArrayList<>()).add(tornado);
         }
     }
+    
+    // Step 2: For each position group with multiple tornadoes, keep only the best one
+    int duplicatesRemoved = 0;
+    for (List<TornadoData> group : positionGroups.values()) {
+        if (group.size() > 1) {
+            // Sort by: 1) Active status, 2) Has survey data, 3) Position history length, 4) Max windspeed
+            group.sort((a, b) -> {
+                if (a.isActive() && !b.isActive()) return -1;
+                if (!a.isActive() && b.isActive()) return 1;
+                
+                if (a.isSurveyed() && !b.isSurveyed()) return -1;
+                if (!a.isSurveyed() && b.isSurveyed()) return 1;
+                
+                int posCountDiff = b.getPositionHistory().size() - a.getPositionHistory().size();
+                if (posCountDiff != 0) return posCountDiff;
+                
+                return Integer.compare(b.getMaxWindspeed(), a.getMaxWindspeed());
+            });
+            
+            // Keep the first (best) tornado, remove the rest
+            TornadoData keepTornado = group.get(0);
+            for (int i = 1; i < group.size(); i++) {
+                TornadoData removeTornado = group.get(i);
+                trackedTornadoes.remove(removeTornado.getId());
+                duplicatesRemoved++;
+                
+                EASAddon.LOGGER.debug("Removed duplicate tornado {} (keeping {})", 
+                                    removeTornado.getId(), keepTornado.getId());
+            }
+        }
+    }
+    
+    // Step 3: Remove tornadoes with excessive position history (path length sanity check)
+    int excessiveHistoryRemoved = 0;
+    for (TornadoData tornado : new ArrayList<>(trackedTornadoes.values())) {
+        List<TornadoData.PositionRecord> history = tornado.getPositionHistory();
+        
+        // If tornado has more than 1000 position records or path length > 50km, it's probably corrupt
+        if (history.size() > 1000 || tornado.getTotalPathLength() > 50000) {
+            trackedTornadoes.remove(tornado.getId());
+            excessiveHistoryRemoved++;
+            
+            // FIXED: Avoid String.format for path length - calculate separately
+            double pathLengthKm = tornado.getTotalPathLength() / 1000.0;
+            EASAddon.LOGGER.warn("Removed tornado {} with excessive data: {} positions, {}km path", 
+                               tornado.getId(), history.size(), pathLengthKm);
+        }
+    }
+    
+    // Step 4: Remove very old inactive tornadoes (older than 1 hour)
+    int oldTornadoesRemoved = 0;
+    for (TornadoData tornado : new ArrayList<>(trackedTornadoes.values())) {
+        if (!tornado.isActive() && (currentTime - tornado.getLastSeenTime()) > 3600000) { // 1 hour
+            trackedTornadoes.remove(tornado.getId());
+            oldTornadoesRemoved++;
+        }
+    }
+    
+    int finalCount = trackedTornadoes.size();
+    int totalRemoved = initialCount - finalCount;
+    
+    if (totalRemoved > 0) {
+        EASAddon.LOGGER.info("Maintenance cleanup completed: {} -> {} tornadoes ({} removed)", 
+                           initialCount, finalCount, totalRemoved);
+        EASAddon.LOGGER.info("  Duplicates removed: {}", duplicatesRemoved);
+        EASAddon.LOGGER.info("  Excessive history removed: {}", excessiveHistoryRemoved);
+        EASAddon.LOGGER.info("  Old inactive removed: {}", oldTornadoesRemoved);
+        
+        // Force save after cleanup
+        forceSave();
+    }
+}
 
     /**
      * FIXED: Enhanced position tracking with duplicate prevention
