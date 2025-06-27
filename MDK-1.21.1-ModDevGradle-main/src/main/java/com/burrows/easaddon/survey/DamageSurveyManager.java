@@ -1,6 +1,7 @@
 package com.burrows.easaddon.survey;
 
 import com.burrows.easaddon.EASAddon;
+import net.minecraft.world.level.levelgen.Heightmap;
 import com.burrows.easaddon.tornado.TornadoData;
 import com.burrows.easaddon.tornado.TornadoTracker;
 
@@ -14,6 +15,7 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.api.distmarker.Dist;
@@ -388,52 +390,119 @@ private void recalculateDamageForLoadedChunks(long tornadoId, Set<ChunkPos> load
 /**
  * Analyze a chunk for retroactive damage evidence
  */
+
+
+/**
+ * Check if a specific block shows evidence of tornado damage
+ */
+
+
+/**
+ * Record retroactive damage evidence
+ */
+/**
+ * FIXED: Record retroactive damage with proper calculations instead of hardcoded values
+ */
+private void recordRetroactiveDamage(long tornadoId, ChunkPos chunkPos, BlockPos pos, Level level) {
+    Map<ChunkPos, ChunkDamageData> tornadoChunks = tornadoDamageData.computeIfAbsent(tornadoId, k -> new ConcurrentHashMap<>());
+    ChunkDamageData chunkData = tornadoChunks.computeIfAbsent(chunkPos, ChunkDamageData::new);
+    
+    BlockState currentState = level.getBlockState(pos);
+    BlockState presumedOriginal;
+    
+    // FIXED: Better original state determination
+    if (currentState.isAir()) {
+        // Check what was likely here before
+        BlockPos below = pos.below();
+        BlockState belowState = level.getBlockState(below);
+        if (belowState.is(Blocks.GRASS_BLOCK) || belowState.is(Blocks.DIRT)) {
+            presumedOriginal = Blocks.GRASS_BLOCK.defaultBlockState(); // Grass was scoured to air
+        } else {
+            presumedOriginal = Blocks.OAK_LOG.defaultBlockState(); // Assume it was a tree that got destroyed
+        }
+    } else if (currentState.is(Blocks.STRIPPED_OAK_LOG) || currentState.is(Blocks.STRIPPED_BIRCH_LOG) || 
+               currentState.is(Blocks.STRIPPED_SPRUCE_LOG) || currentState.is(Blocks.STRIPPED_DARK_OAK_LOG) ||
+               currentState.is(Blocks.STRIPPED_ACACIA_LOG) || currentState.is(Blocks.STRIPPED_JUNGLE_LOG)) {
+        // Debarked log - find the original log type
+        if (currentState.is(Blocks.STRIPPED_OAK_LOG)) presumedOriginal = Blocks.OAK_LOG.defaultBlockState();
+        else if (currentState.is(Blocks.STRIPPED_BIRCH_LOG)) presumedOriginal = Blocks.BIRCH_LOG.defaultBlockState();
+        else if (currentState.is(Blocks.STRIPPED_SPRUCE_LOG)) presumedOriginal = Blocks.SPRUCE_LOG.defaultBlockState();
+        else if (currentState.is(Blocks.STRIPPED_DARK_OAK_LOG)) presumedOriginal = Blocks.DARK_OAK_LOG.defaultBlockState();
+        else if (currentState.is(Blocks.STRIPPED_ACACIA_LOG)) presumedOriginal = Blocks.ACACIA_LOG.defaultBlockState();
+        else presumedOriginal = Blocks.JUNGLE_LOG.defaultBlockState();
+        
+        // FIXED: Add debarking evidence (indicates 140+ mph winds)
+        chunkData.addDebarkingEvidence(pos);
+    } else {
+        presumedOriginal = currentState; // No change detected
+    }
+    
+    // FIXED: Calculate proper block strength instead of hardcoding 60.0f
+    float blockStrength = getBlockStrengthWithCustom(presumedOriginal.getBlock(), level);
+    
+    // FIXED: Get actual tornado windspeed from tornado data instead of hardcoding 100
+    TornadoData tornadoData = TornadoTracker.getInstance().getTornadoData(tornadoId);
+    int actualTornadoWindspeed = tornadoData != null ? tornadoData.getMaxWindspeed() : 150; // Use actual max windspeed
+    
+    // Add damage record with proper values
+    chunkData.addDamage(pos, presumedOriginal, currentState, blockStrength, actualTornadoWindspeed);
+    
+    EASAddon.LOGGER.debug("Survey: Recorded retroactive damage at {} in chunk ({}, {}) - strength: {}, windspeed: {}mph", 
+        pos, chunkPos.x, chunkPos.z, blockStrength, actualTornadoWindspeed);
+}
+
+/**
+ * FIXED: Enhanced retroactive damage analysis with proper windspeed calculations
+ */
 private void analyzeChunkForRetroactiveDamage(long tornadoId, ChunkPos chunkPos, Level level, TornadoData tornadoData) {
     try {
         LevelChunk chunk = level.getChunk(chunkPos.x, chunkPos.z);
         int chunkStartX = chunkPos.x * 16;
         int chunkStartZ = chunkPos.z * 16;
-        
-        // Get tornado's closest approach to this chunk
         Vec3 chunkCenter = new Vec3(chunkStartX + 8, 0, chunkStartZ + 8);
+        
+        // Find closest tornado position and its windspeed
         double minDistanceToTornado = Double.MAX_VALUE;
         Vec3 closestTornadoPos = null;
         int maxWindspeedAtChunk = 0;
         
-        // Find closest tornado position to this chunk
         for (TornadoData.PositionRecord record : tornadoData.getPositionHistory()) {
             Vec3 tornadoPos = record.position;
             double distance = tornadoPos.distanceTo(chunkCenter);
             if (distance < minDistanceToTornado) {
                 minDistanceToTornado = distance;
                 closestTornadoPos = tornadoPos;
-                maxWindspeedAtChunk = record.windspeed;
+                maxWindspeedAtChunk = record.windspeed; // FIXED: Use actual windspeed from record
             }
         }
         
         if (closestTornadoPos == null) return;
         
-        // Only analyze if tornado was close enough to cause damage
-        double maxDamageRange = Math.max(tornadoData.getMaxWidth() * 2.0, 80.0); // Similar to PMWeather logic
+        // FIXED: Use tornado's actual max width for damage range
+        double maxDamageRange = Math.max(tornadoData.getMaxWidth() * 2.0, 80.0);
         if (minDistanceToTornado > maxDamageRange) {
             EASAddon.LOGGER.debug("Survey: Chunk ({}, {}) too far from tornado path ({}m > {}m)", 
                 chunkPos.x, chunkPos.z, Math.round(minDistanceToTornado), Math.round(maxDamageRange));
             return;
         }
         
-        // Sample blocks in the chunk for evidence of damage
         int evidenceFound = 0;
-        for (int x = 0; x < 16; x += 2) { // Sample every other block for performance
-            for (int z = 0; z < 16; z += 2) {
-                BlockPos surfacePos = level.getHeightmapPos(net.minecraft.world.level.levelgen.Heightmap.Types.WORLD_SURFACE, 
+        
+        // FIXED: Sample more thoroughly for strong tornadoes
+        int sampleRate = maxWindspeedAtChunk > 150 ? 1 : 2; // Sample every block for strong tornadoes
+        
+        for (int x = 0; x < 16; x += sampleRate) {
+            for (int z = 0; z < 16; z += sampleRate) {
+                BlockPos surfacePos = level.getHeightmapPos(Heightmap.Types.WORLD_SURFACE, 
                     new BlockPos(chunkStartX + x, 0, chunkStartZ + z));
                 
                 if (checkBlockForDamageEvidence(surfacePos, level, closestTornadoPos, maxWindspeedAtChunk)) {
                     evidenceFound++;
-                    
-                    // Record this as damage evidence
                     recordRetroactiveDamage(tornadoId, chunkPos, surfacePos, level);
                 }
+                
+                // FIXED: Check for scouring evidence
+                checkForScouringEvidence(tornadoId, chunkPos, surfacePos, level, closestTornadoPos, maxWindspeedAtChunk);
             }
         }
         
@@ -449,49 +518,36 @@ private void analyzeChunkForRetroactiveDamage(long tornadoId, ChunkPos chunkPos,
 }
 
 /**
- * Check if a specific block shows evidence of tornado damage
+ * FIXED: Enhanced damage evidence checking with proper windspeed calculations
  */
 private boolean checkBlockForDamageEvidence(BlockPos pos, Level level, Vec3 tornadoPos, int tornadoWindspeed) {
     try {
         BlockState currentState = level.getBlockState(pos);
         
-        // Look for common tornado damage indicators:
-        // 1. Missing vegetation where there should be some
-        // 2. Exposed dirt/ground at surface level
-        // 3. Scattered debris patterns
-        // 4. Unnatural air blocks at surface level
-        
+        // Check for scouring evidence (grass -> air above dirt/grass)
         if (currentState.isAir()) {
-            // Air block at surface level could indicate removed vegetation/structures
             BlockPos below = pos.below();
             BlockState belowState = level.getBlockState(below);
-            
-            // If there's dirt/grass below an air block at surface, likely vegetation was removed
-            if (belowState.is(net.minecraft.world.level.block.Blocks.GRASS_BLOCK) || 
-                belowState.is(net.minecraft.world.level.block.Blocks.DIRT)) {
-                
+            if (belowState.is(Blocks.GRASS_BLOCK) || belowState.is(Blocks.DIRT)) {
+                // Calculate wind effect at this position
                 double distanceToTornado = tornadoPos.distanceTo(pos.getCenter());
-                // Simple wind effect calculation
-                double windEffect = tornadoWindspeed * (1.0 - (distanceToTornado / 100.0));
+                double windEffect = tornadoWindspeed * (1.0 - distanceToTornado / 200.0); // FIXED: Better distance falloff
                 
-                if (windEffect > 40.0) { // Minimum wind to remove vegetation
+                if (windEffect > 65.0) { // Minimum for any tornado damage
                     return true;
                 }
             }
         }
         
-        // Check for debarking evidence on logs
-        if (currentState.is(net.minecraft.world.level.block.Blocks.STRIPPED_OAK_LOG) ||
-            currentState.is(net.minecraft.world.level.block.Blocks.STRIPPED_BIRCH_LOG) ||
-            currentState.is(net.minecraft.world.level.block.Blocks.STRIPPED_SPRUCE_LOG) ||
-            currentState.is(net.minecraft.world.level.block.Blocks.STRIPPED_DARK_OAK_LOG) ||
-            currentState.is(net.minecraft.world.level.block.Blocks.STRIPPED_ACACIA_LOG) ||
-            currentState.is(net.minecraft.world.level.block.Blocks.STRIPPED_JUNGLE_LOG)) {
+        // Check for debarking evidence (stripped logs)
+        if (currentState.is(Blocks.STRIPPED_OAK_LOG) || currentState.is(Blocks.STRIPPED_BIRCH_LOG) || 
+            currentState.is(Blocks.STRIPPED_SPRUCE_LOG) || currentState.is(Blocks.STRIPPED_DARK_OAK_LOG) ||
+            currentState.is(Blocks.STRIPPED_ACACIA_LOG) || currentState.is(Blocks.STRIPPED_JUNGLE_LOG)) {
             
             double distanceToTornado = tornadoPos.distanceTo(pos.getCenter());
-            double windEffect = tornadoWindspeed * (1.0 - (distanceToTornado / 100.0));
+            double windEffect = tornadoWindspeed * (1.0 - distanceToTornado / 200.0);
             
-            if (windEffect > 140.0) { // Minimum wind for debarking
+            if (windEffect > 140.0) { // Debarking requires 140+ mph
                 return true;
             }
         }
@@ -504,22 +560,38 @@ private boolean checkBlockForDamageEvidence(BlockPos pos, Level level, Vec3 torn
 }
 
 /**
- * Record retroactive damage evidence
+ * FIXED: Add proper scouring evidence detection
  */
-private void recordRetroactiveDamage(long tornadoId, ChunkPos chunkPos, BlockPos pos, Level level) {
-    Map<ChunkPos, ChunkDamageData> tornadoChunks = tornadoDamageData.computeIfAbsent(tornadoId, k -> new ConcurrentHashMap<>());
-    ChunkDamageData chunkData = tornadoChunks.computeIfAbsent(chunkPos, ChunkDamageData::new);
-    
-    BlockState currentState = level.getBlockState(pos);
-    BlockState presumedOriginal = currentState.isAir() ? 
-        net.minecraft.world.level.block.Blocks.GRASS_BLOCK.defaultBlockState() : 
-        currentState; // For stripped logs, we assume they were normal logs
-    
-    // Add damage record
-    chunkData.addDamage(pos, presumedOriginal, currentState, 60.0f, 100); // Estimated values
-    
-    EASAddon.LOGGER.debug("Survey: Recorded retroactive damage at {} in chunk ({}, {})", 
-        pos, chunkPos.x, chunkPos.z);
+private void checkForScouringEvidence(long tornadoId, ChunkPos chunkPos, BlockPos surfacePos, Level level, Vec3 tornadoPos, int tornadoWindspeed) {
+    try {
+        BlockState surfaceState = level.getBlockState(surfacePos);
+        double distanceToTornado = tornadoPos.distanceTo(surfacePos.getCenter());
+        double windEffect = tornadoWindspeed * (1.0 - distanceToTornado / 200.0);
+        
+        Map<ChunkPos, ChunkDamageData> tornadoChunks = tornadoDamageData.computeIfAbsent(tornadoId, k -> new ConcurrentHashMap<>());
+        ChunkDamageData chunkData = tornadoChunks.computeIfAbsent(chunkPos, ChunkDamageData::new);
+        
+        // Check for grass scouring (grass -> dirt)
+        if (surfaceState.is(Blocks.DIRT) && isInNaturalGrassArea(surfacePos, level) && windEffect >= 140.0) {
+            chunkData.addScouringEvidence(surfacePos, ChunkDamageData.ScouringLevel.GRASS_TO_DIRT);
+            EASAddon.LOGGER.debug("Found grass scouring evidence at {} - wind: {}mph", surfacePos, Math.round(windEffect));
+        }
+        
+        // Check for medium scouring
+        if (isMediumScouringBlock(surfaceState) && windEffect >= 170.0) {
+            chunkData.addScouringEvidence(surfacePos, ChunkDamageData.ScouringLevel.DIRT_TO_MEDIUM);
+            EASAddon.LOGGER.debug("Found medium scouring evidence at {} - wind: {}mph", surfacePos, Math.round(windEffect));
+        }
+        
+        // Check for heavy scouring  
+        if (isHeavyScouringBlock(surfaceState) && windEffect >= 200.0) {
+            chunkData.addScouringEvidence(surfacePos, ChunkDamageData.ScouringLevel.MEDIUM_TO_HEAVY);
+            EASAddon.LOGGER.debug("Found heavy scouring evidence at {} - wind: {}mph", surfacePos, Math.round(windEffect));
+        }
+        
+    } catch (Exception e) {
+        EASAddon.LOGGER.error("Error checking scouring evidence: {}", e.getMessage());
+    }
 }
 
 /**

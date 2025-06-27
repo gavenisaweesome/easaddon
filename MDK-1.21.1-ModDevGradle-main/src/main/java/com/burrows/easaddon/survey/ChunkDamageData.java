@@ -9,6 +9,9 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 
 import java.util.*;
+import java.util.stream.Collectors;
+
+import com.burrows.easaddon.EASAddon;
 
 /**
  * Enhanced chunk damage data that tracks debarking and ground scouring evidence
@@ -94,105 +97,158 @@ public class ChunkDamageData {
     }
     
     // FIXED: Get enhanced windspeed estimate using evidence-based minimums
-    public float getEnhancedWindspeedEstimate() {
-        // Start with block strength evidence
-        float maxBlockStrength = damageRecords.values().stream()
-                .map(record -> record.blockStrength)
-                .max(Float::compareTo)
-                .orElse(0.0f);
-        
-        // FIXED: Use minimum thresholds, not additive bonuses
-        float minimumWindspeedFromEvidence = maxBlockStrength;
-        
-        // FIXED: Debarking evidence establishes minimum 140 mph
-        if (!debarkedLogs.isEmpty()) {
-            minimumWindspeedFromEvidence = Math.max(minimumWindspeedFromEvidence, 140.0f);
-        }
-        
-        // FIXED: Scouring evidence establishes minimum based on highest level found
-        for (ScouringLevel level : scouringEvidence.values()) {
-            minimumWindspeedFromEvidence = Math.max(minimumWindspeedFromEvidence, level.minimumWindspeed);
-        }
-        
-        // FIXED: Add small confidence boost only if multiple evidence types are present
-        // This represents increased confidence in the estimate, not higher winds
-        int evidenceTypes = 0;
-        if (!damageRecords.isEmpty()) evidenceTypes++;
-        if (!debarkedLogs.isEmpty()) evidenceTypes++;
-        if (!scouringEvidence.isEmpty()) evidenceTypes++;
-        
-        // Small confidence adjustment (max 5% boost) for multiple evidence types
-        if (evidenceTypes >= 2) {
-            float confidenceMultiplier = 1.0f + (evidenceTypes - 1) * 0.025f; // 2.5% per additional evidence type
-            minimumWindspeedFromEvidence *= confidenceMultiplier;
-        }
-        
-        return minimumWindspeedFromEvidence;
+/**
+ * FIXED: Get enhanced windspeed estimate using evidence-based minimums properly
+ */
+public float getEnhancedWindspeedEstimate() {
+    // Start with the highest block strength found
+    float maxBlockStrength = 0.0f;
+    float maxTornadoWindspeed = 0.0f;
+    
+    for (DamageRecord record : damageRecords.values()) {
+        maxBlockStrength = Math.max(maxBlockStrength, record.blockStrength);
+        maxTornadoWindspeed = Math.max(maxTornadoWindspeed, record.tornadoWindspeed);
     }
+    
+    // FIXED: Start with the actual recorded tornado windspeed as baseline
+    float estimatedWindspeed = Math.max(maxBlockStrength, maxTornadoWindspeed);
+    
+    // FIXED: Evidence establishes minimum thresholds, not additive bonuses
+    float minimumFromEvidence = estimatedWindspeed;
+    
+    // FIXED: Debarking evidence establishes absolute minimum of 140 mph
+    if (!debarkedLogs.isEmpty()) {
+        minimumFromEvidence = Math.max(minimumFromEvidence, 140.0f);
+        EASAddon.LOGGER.debug("Chunk {}: Debarking evidence found - minimum windspeed now 140mph", chunkPos);
+    }
+    
+    // FIXED: Scouring evidence establishes minimum based on highest level found
+    for (ScouringLevel level : scouringEvidence.values()) {
+        minimumFromEvidence = Math.max(minimumFromEvidence, level.minimumWindspeed);
+        EASAddon.LOGGER.debug("Chunk {}: {} scouring evidence - minimum windspeed now {}mph", 
+            chunkPos, level.name(), level.minimumWindspeed);
+    }
+    
+    // FIXED: Multiple evidence types increase confidence, not windspeed
+    int evidenceTypeCount = 0;
+    if (!damageRecords.isEmpty()) evidenceTypeCount++;
+    if (!debarkedLogs.isEmpty()) evidenceTypeCount++;
+    if (!scouringEvidence.isEmpty()) evidenceTypeCount++;
+    
+    // Small confidence boost (max 10%) for multiple evidence types
+    if (evidenceTypeCount >= 2) {
+        float confidenceBoost = 1.0f + (evidenceTypeCount - 1) * 0.05f; // 5% per additional evidence type
+        minimumFromEvidence *= confidenceBoost;
+        EASAddon.LOGGER.debug("Chunk {}: Multiple evidence types ({}) - confidence boost: {:.1f}%", 
+            chunkPos, evidenceTypeCount, (confidenceBoost - 1.0f) * 100);
+    }
+    
+    EASAddon.LOGGER.info("Chunk {}: Enhanced windspeed calculation: baseline={}mph, evidence_minimum={}mph, final={}mph", 
+        chunkPos, Math.round(estimatedWindspeed), Math.round(minimumFromEvidence), Math.round(minimumFromEvidence));
+    
+    return minimumFromEvidence;
+}
+
+/**
+ * FIXED: Get minimum EF rating from evidence with proper thresholds
+ */
+public int getMinimumEFRatingFromEvidence() {
+    int minimumRating = -1;
+    
+    // Debarking evidence = minimum EF3 (140+ mph)
+    if (!debarkedLogs.isEmpty()) {
+        minimumRating = Math.max(minimumRating, 3);
+        EASAddon.LOGGER.debug("Chunk {}: Debarking evidence establishes minimum EF3", chunkPos);
+    }
+    
+    // Scouring evidence establishes minimums
+    for (ScouringLevel level : scouringEvidence.values()) {
+        int ratingFromScouring = switch (level) {
+            case GRASS_TO_DIRT -> 3;      // 140+ mph = EF3+
+            case DIRT_TO_MEDIUM -> 4;     // 170+ mph = EF4+  
+            case MEDIUM_TO_HEAVY -> 5;    // 200+ mph = EF5
+        };
+        minimumRating = Math.max(minimumRating, ratingFromScouring);
+        EASAddon.LOGGER.debug("Chunk {}: {} scouring establishes minimum EF{}", 
+            chunkPos, level.name(), ratingFromScouring);
+    }
+    
+    return minimumRating;
+}
+
+/**
+ * FIXED: Check if chunk has high confidence evidence (multiple types)
+ */
+public boolean hasHighConfidenceEvidence() {
+    int evidenceTypes = 0;
+    if (!damageRecords.isEmpty()) evidenceTypes++;
+    if (!debarkedLogs.isEmpty()) evidenceTypes++;
+    if (!scouringEvidence.isEmpty()) evidenceTypes++;
+    
+    return evidenceTypes >= 2;
+}
+
+/**
+ * FIXED: Get evidence summary with proper details
+ */
+public String getEvidenceSummary() {
+    StringBuilder summary = new StringBuilder();
+    
+    if (!damageRecords.isEmpty()) {
+        float maxStrength = (float) damageRecords.values().stream()
+            .mapToDouble(r -> r.blockStrength)
+            .max().orElse(0.0);
+        summary.append(String.format("Block damage (%.0f mph)", maxStrength));
+    }
+    
+    if (!debarkedLogs.isEmpty()) {
+        if (summary.length() > 0) summary.append(", ");
+        summary.append(String.format("Debarking (%d trees)", debarkedLogs.size()));
+    }
+    
+    if (!scouringEvidence.isEmpty()) {
+        if (summary.length() > 0) summary.append(", ");
+        
+        Map<ScouringLevel, Long> counts = scouringEvidence.values().stream()
+            .collect(Collectors.groupingBy(level -> level, Collectors.counting()));
+        
+        for (Map.Entry<ScouringLevel, Long> entry : counts.entrySet()) {
+            String levelName = switch (entry.getKey()) {
+                case GRASS_TO_DIRT -> "Light scouring";
+                case DIRT_TO_MEDIUM -> "Medium scouring";
+                case MEDIUM_TO_HEAVY -> "Heavy scouring";
+            };
+            summary.append(String.format("%s (%d)", levelName, entry.getValue()));
+        }
+    }
+    
+    if (summary.length() == 0) {
+        summary.append("No evidence found");
+    }
+    
+    return summary.toString();
+}
+
+/**
+ * FIXED: Get average tornado windspeed from damage records
+ */
+public float getAverageTornadoWindspeed() {
+    if (damageRecords.isEmpty()) return 0.0f;
+    
+    return (float) damageRecords.values().stream()
+        .mapToInt(record -> record.tornadoWindspeed)
+        .average()
+        .orElse(0.0);
+}
     
     // ADDED: Get evidence summary for detailed reporting
-    public String getEvidenceSummary() {
-        StringBuilder summary = new StringBuilder();
-        
-        summary.append("Block damage: ").append(damageRecords.size()).append(" records");
-        
-        if (!debarkedLogs.isEmpty()) {
-            summary.append(", Debarked logs: ").append(debarkedLogs.size()).append(" (≥140mph)");
-        }
-        
-        if (!scouringEvidence.isEmpty()) {
-            Map<ScouringLevel, Integer> scouringCounts = new HashMap<>();
-            for (ScouringLevel level : scouringEvidence.values()) {
-                scouringCounts.merge(level, 1, Integer::sum);
-            }
-            
-            for (Map.Entry<ScouringLevel, Integer> entry : scouringCounts.entrySet()) {
-                summary.append(", ").append(entry.getKey().name()).append(": ")
-                       .append(entry.getValue()).append(" (≥")
-                       .append(Math.round(entry.getKey().minimumWindspeed)).append("mph)");
-            }
-        }
-        
-        return summary.toString();
-    }
+ 
     
     // ADDED: Get minimum EF rating based on evidence types
-    public int getMinimumEFRatingFromEvidence() {
-        int minimumRating = 0;
-        
-        // Check scouring evidence for minimum ratings
-        for (ScouringLevel level : scouringEvidence.values()) {
-            switch (level) {
-                case MEDIUM_TO_HEAVY: // 200+ mph required
-                    minimumRating = Math.max(minimumRating, 5); // EF5
-                    break;
-                case DIRT_TO_MEDIUM: // 170+ mph required  
-                    minimumRating = Math.max(minimumRating, 4); // EF4
-                    break;
-                case GRASS_TO_DIRT: // 140+ mph required
-                    minimumRating = Math.max(minimumRating, 3); // EF3
-                    break;
-            }
-        }
-        
-        // Check debarking evidence (requires 140+ mph)
-        if (!debarkedLogs.isEmpty()) {
-            minimumRating = Math.max(minimumRating, 3); // EF3 minimum for debarking
-        }
-        
-        return minimumRating;
-    }
+
     
     // ADDED: Check if chunk has high-confidence evidence
-    public boolean hasHighConfidenceEvidence() {
-        // High confidence if we have multiple evidence types
-        int evidenceTypes = 0;
-        if (!damageRecords.isEmpty()) evidenceTypes++;
-        if (!debarkedLogs.isEmpty()) evidenceTypes++;
-        if (!scouringEvidence.isEmpty()) evidenceTypes++;
-        
-        return evidenceTypes >= 2;
-    }
+
     
     public void markSurveyed(String playerName, int efRating, float maxWindspeed) {
         this.surveyed = true;
@@ -202,12 +258,7 @@ public class ChunkDamageData {
         this.maxWindspeedFound = maxWindspeed;
     }
     
-    public float getAverageTornadoWindspeed() {
-        return (float) damageRecords.values().stream()
-                .mapToInt(record -> record.tornadoWindspeed)
-                .average()
-                .orElse(0.0);
-    }
+
     
     public int getDamageCount() {
         return damageRecords.size() + debarkedLogs.size() + scouringEvidence.size();
