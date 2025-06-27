@@ -144,6 +144,25 @@ public class DamageSurveyManager {
         long tornadoId = tornadoData.getId();
         String playerName = player.getName().getString();
         
+        // CRITICAL FIX: Prevent surveys on active tornadoes
+        if (tornadoData.isActive()) {
+            player.sendSystemMessage(Component.literal("§c§l=== SURVEY BLOCKED ==="));
+            player.sendSystemMessage(Component.literal("§cCannot start damage survey on an active tornado!"));
+            player.sendSystemMessage(Component.literal("§cTornado ID " + tornadoId + " is still ongoing."));
+            player.sendSystemMessage(Component.literal("§c"));
+            player.sendSystemMessage(Component.literal("§eWait for the tornado to dissipate completely"));
+            player.sendSystemMessage(Component.literal("§ebefore conducting a damage survey."));
+            player.sendSystemMessage(Component.literal("§c"));
+            player.sendSystemMessage(Component.literal("§7Current status: §cACTIVE"));
+            player.sendSystemMessage(Component.literal("§7Max windspeed: §a" + tornadoData.getMaxWindspeed() + " mph"));
+            
+            // Play warning sound
+            player.level().playSound(null, player.blockPosition(), SoundEvents.VILLAGER_NO, SoundSource.PLAYERS, 1.0f, 0.8f);
+            
+            EASAddon.LOGGER.warn("Player {} attempted to survey active tornado {}", playerName, tornadoId);
+            return false;
+        }
+        
         // Pre-check for potential rating downgrade
         if (tornadoData.isSurveyed()) {
             int existingRating = tornadoData.getSurveyedEFRating();
@@ -187,59 +206,43 @@ public class DamageSurveyManager {
             player.sendSystemMessage(Component.literal("§cNo damaged chunks found for this tornado"));
             player.sendSystemMessage(Component.literal("§7This tornado may not have caused any trackable damage,"));
             player.sendSystemMessage(Component.literal("§7or it was too weak to destroy blocks."));
+            player.sendSystemMessage(Component.literal("§7"));
+            player.sendSystemMessage(Component.literal("§7Minimum requirements for damage survey:"));
+            player.sendSystemMessage(Component.literal("§7- Tornado must have reached EF1+ intensity"));
+            player.sendSystemMessage(Component.literal("§7- At least some blocks must have been destroyed"));
             return false;
         }
         
-        // SIMPLIFIED: Filter to only chunks that have actual damage data in our survey system
-        List<ChunkPos> validChunks = filterChunksWithActualDamageEvidence(tornadoId, damagedChunks, player);
+        // FIXED: Convert Set to List for SurveySession constructor
+        List<ChunkPos> chunkList = new ArrayList<>(damagedChunks);
         
-        if (validChunks.isEmpty()) {
-            player.sendSystemMessage(Component.literal("§cNo surveyable damage evidence found for this tornado"));
-            player.sendSystemMessage(Component.literal("§7The tornado damaged chunks but no survey data was captured."));
-            player.sendSystemMessage(Component.literal("§7This may indicate the damage occurred before the mod was active."));
-            return false;
-        }
-        
-        // Sort chunks by distance to player for efficient surveying
-        Vec3 playerPos = player.position();
-        validChunks.sort((a, b) -> {
-            double distA = getDistanceToChunk(playerPos, a);
-            double distB = getDistanceToChunk(playerPos, b);
-            return Double.compare(distA, distB);
-        });
-        
-        // Send validated chunks to server
-        boolean networkStartSuccess = clientSurveyManager.startSurvey(tornadoId, validChunks, player);
-        if (!networkStartSuccess) {
-            player.sendSystemMessage(Component.literal("§cFailed to start networked survey"));
-            return false;
-        }
-        
-        // Create local survey session
-        SurveySession session = new SurveySession(tornadoId, playerName, validChunks);
+        // Start local survey session - FIXED: Use List instead of Set
+        SurveySession session = new SurveySession(tornadoId, playerName, chunkList);
         activeSurveys.put(tornadoId, session);
         
-        // Send informative messages
-        player.sendSystemMessage(Component.literal("§6=== DAMAGE SURVEY STARTED ==="));
+        // Start networked survey 
+        boolean networkSuccess = clientSurveyManager.startSurvey(tornadoData, player);
+        if (!networkSuccess) {
+            // Remove local session if network failed
+            activeSurveys.remove(tornadoId);
+            return false;
+        }
+        
+        // Success messages
+        player.sendSystemMessage(Component.literal("§a§l=== DAMAGE SURVEY STARTED ==="));
         player.sendSystemMessage(Component.literal("§eTornado ID: " + tornadoId));
-        player.sendSystemMessage(Component.literal("§eChunks with actual damage: " + validChunks.size()));
-        player.sendSystemMessage(Component.literal("§eRequired surveys: " + session.requiredSurveys + " (25%)"));
-        
-        // Show actual damage summary
-        showActualDamageSummary(tornadoId, validChunks, player);
-        
+        player.sendSystemMessage(Component.literal("§eStatus: §c" + (tornadoData.isActive() ? "ACTIVE" : "ENDED")));
+        player.sendSystemMessage(Component.literal("§eChunks to survey: " + damagedChunks.size()));
         player.sendSystemMessage(Component.literal("§b"));
-        player.sendSystemMessage(Component.literal("§bInstructions:"));
-        player.sendSystemMessage(Component.literal("§7• Navigate to highlighted chunks"));
-        player.sendSystemMessage(Component.literal("§7• Right-click with surveyor tool in chunk"));
-        player.sendSystemMessage(Component.literal("§7• Rate damage based on strongest evidence"));
-        player.sendSystemMessage(Component.literal("§7• Use /survey quit to stop early"));
+        player.sendSystemMessage(Component.literal("§bWalk through the damage path and right-click"));
+        player.sendSystemMessage(Component.literal("§bon damaged areas to assess EF rating."));
+        player.sendSystemMessage(Component.literal("§b"));
+        player.sendSystemMessage(Component.literal("§7Use '/survey status' to check progress"));
+        player.sendSystemMessage(Component.literal("§7Use '/survey finish' when complete"));
+        player.sendSystemMessage(Component.literal("§7Use '/survey quit' to cancel"));
         
-        // Guide to first chunk
-        guideToNextChunk(player, session);
-        
-        EASAddon.LOGGER.info("Started survey for tornado {} with {} chunks containing REAL damage (required: {})", 
-            tornadoId, validChunks.size(), session.requiredSurveys);
+        EASAddon.LOGGER.info("Started damage survey for tornado {} by player {} ({} chunks)", 
+                           tornadoId, playerName, damagedChunks.size());
         
         return true;
     }

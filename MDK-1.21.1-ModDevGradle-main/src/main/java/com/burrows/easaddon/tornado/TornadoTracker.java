@@ -29,6 +29,7 @@ import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.structure.StructureStart;
 import net.minecraft.world.level.levelgen.Heightmap;
+import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.event.level.ChunkEvent;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletableFuture;
@@ -533,191 +534,8 @@ public class TornadoTracker {
         }
     }
     
-  
-    
-private void updateTornadoTracking(Level level) {
-    try {
-        // Get the weather handler from the level
-        Object weatherHandler = getWeatherHandler(level);
-        if (weatherHandler == null) {
-            return;
-        }
-        
-        // Get the storms list using the getStorms() method
-        List<?> storms = (List<?>) getStormsMethod.invoke(weatherHandler);
-        if (storms == null) {
-            return;
-        }
-        
-        // FIXED: Track all storms that exist, not just stage 3+
-        Set<Long> allExistingStormIds = new HashSet<>();
-        
-        // Process each storm
-        for (Object storm : storms) {
-            if (storm == null) continue;
-            
-            try {
-                // Get storm data using reflection
-                int stormType = (Integer) stormTypeField.get(storm);
-                
-                // Only track tornadoes (stormType 0)
-                if (stormType != 0) continue;
-                
-                long stormId = (Long) stormIDField.get(storm);
-                Vec3 position = (Vec3) stormPositionField.get(storm);
-                int windspeed = (Integer) stormWindspeedField.get(storm);
-                float width = (Float) stormWidthField.get(storm);
-                int stage = (Integer) stormStageField.get(storm);
-                boolean dead = (Boolean) stormDeadField.get(storm);
-                
-                // FIXED: Add all non-dead storms to existing list
-                if (!dead) {
-                    allExistingStormIds.add(stormId);
-                }
-                
-                // Only start tracking if storm has reached stage 3 (confirmed tornado)
-                if (stage >= 3) {
-                    // Get or create tornado data
-                    TornadoData tornadoData = trackedTornadoes.computeIfAbsent(stormId, TornadoData::new);
-                    
-                    // Update tornado data
-                    if (!dead && windspeed > 0) { // Only record if tornado is alive and has wind
-                        tornadoData.updateData(windspeed, width, stage, position);
-                        trackDamagedChunks(storm, tornadoData);
-                    } else if (dead || windspeed == 0) {
-                        tornadoData.markInactive();
-                    }
-                } else if (trackedTornadoes.containsKey(stormId)) {
-                    // FIXED: If we were tracking this storm but it's no longer stage 3, 
-                    // continue updating but don't mark as inactive unless actually dead
-                    TornadoData existingData = trackedTornadoes.get(stormId);
-                    
-                    if (!dead) {
-                        // Storm is still alive, just not fully formed - keep it active
-                        // Update with current data (even if windspeed is 0 temporarily)
-                        existingData.updateData(windspeed, width, stage, position);
-                        existingData.setLastSeenTime(System.currentTimeMillis());
-                    } else {
-                        // Storm is actually dead - mark inactive
-                        existingData.markInactive();
-                    }
-                }
-                
-            } catch (Exception e) {
-                // Skip individual storm errors
-            }
-        }
-        
-        // FIXED: Only mark storms as inactive if they're completely missing from the storms list
-        // or if we haven't seen them in a while (safety check)
-        long currentTime = System.currentTimeMillis();
-        for (TornadoData tornado : trackedTornadoes.values()) {
-            if (tornado.isActive()) {
-                // Mark inactive only if:
-                // 1. Storm ID is not in the current storms list, AND
-                // 2. We haven't seen it for more than 30 seconds (safety buffer)
-                if (!allExistingStormIds.contains(tornado.getId()) && 
-                    (currentTime - tornado.getLastSeenTime()) > 30000) {
-                    tornado.markInactive();
-                    EASAddon.LOGGER.info("Marked tornado {} as inactive (missing from storms list for >30s)", 
-                                       tornado.getId());
-                }
-            }
-        }
-        
-    } catch (Exception e) {
-        // Skip tracking errors
-    }
-}
+      
 
-
-// Replace the trackDamagedChunks method in TornadoTracker.java with this enhanced version
-
-/**
- * FIXED: Track all chunks in tornado's damage radius, creating evidence for both loaded and unloaded chunks
- */
-/**
- * ENHANCED: Track all chunks in tornado's damage radius, creating evidence for both loaded and unloaded chunks
- * This replaces the existing trackDamagedChunks method in TornadoTracker.java
- */
-private void trackDamagedChunks(Object storm, TornadoData tornadoData) {
-    try {
-        int windspeed = (Integer) stormWindspeedField.get(storm);
-        int stage = (Integer) stormStageField.get(storm);
-        Vec3 position = (Vec3) stormPositionField.get(storm);
-        float width = (Float) stormWidthField.get(storm);
-        
-        if (stage >= 3 && windspeed >= 40 && width >= 5.0f) {
-            
-            // Use PMWeather's actual damage radius calculation
-            int windfieldWidth = Math.max((int)width, 40);
-            float damageRadius = windfieldWidth * 2.0f; // PMWeather's real damage range
-            
-            // Cap at reasonable maximum to prevent excessive chunk checking
-            damageRadius = Math.min(damageRadius, 200.0f);
-            
-            int chunkRadius = (int) Math.ceil(damageRadius / 16.0);
-            ChunkPos centerChunk = new ChunkPos(new BlockPos((int)position.x, (int)position.y, (int)position.z));
-            
-            Level level = Minecraft.getInstance().level;
-            if (level == null) return;
-            
-            // Track chunks that would have damage
-            int chunksWithDamage = 0;
-            int chunksProcessedRealTime = 0;
-            int chunksMarkedForRetroactive = 0;
-            
-            for (int dx = -chunkRadius; dx <= chunkRadius; dx++) {
-                for (int dz = -chunkRadius; dz <= chunkRadius; dz++) {
-                    ChunkPos chunkPos = new ChunkPos(centerChunk.x + dx, centerChunk.z + dz);
-                    
-                    // Calculate distance from chunk center to tornado
-                    double chunkCenterX = chunkPos.x * 16 + 8;
-                    double chunkCenterZ = chunkPos.z * 16 + 8;
-                    double chunkDistance = position.multiply(1, 0, 1).distanceTo(new Vec3(chunkCenterX, 0, chunkCenterZ));
-                    
-                    // Only process chunks actually within damage radius
-                    if (chunkDistance > damageRadius) continue;
-                    
-                    // ENHANCED: Check for destroyable blocks whether chunk is loaded or not
-                    boolean hasDestroyableBlocks = checkChunkForDestroyableBlocks(
-                        chunkPos, position, width, windspeed, windfieldWidth, level);
-                    
-                    if (hasDestroyableBlocks) {
-                        // Add to tornado's damaged chunks list (this is crucial for later retroactive analysis)
-                        tornadoData.addDamagedChunk(chunkPos);
-                        chunksWithDamage++;
-                        
-                        if (level.hasChunkAt(chunkPos.getMinBlockX(), chunkPos.getMinBlockZ())) {
-                            // LOADED CHUNK: Create damage evidence immediately
-                            createAccurateDamageEvidence(tornadoData.getId(), chunkPos, 
-                                windspeed, position, level, windfieldWidth);
-                            chunksProcessedRealTime++;
-                            
-                            EASAddon.LOGGER.debug("Real-time damage processing for tornado {} in loaded chunk ({}, {})", 
-                                tornadoData.getId(), chunkPos.x, chunkPos.z);
-                        } else {
-                            // UNLOADED CHUNK: Mark for retroactive processing when chunk loads
-                            markChunkForRetroactiveDamage(tornadoData.getId(), chunkPos, 
-                                windspeed, position, windfieldWidth);
-                            chunksMarkedForRetroactive++;
-                            
-                            EASAddon.LOGGER.debug("Marked unloaded chunk ({}, {}) for retroactive damage calculation (tornado {})", 
-                                chunkPos.x, chunkPos.z, tornadoData.getId());
-                        }
-                    }
-                }
-            }
-            
-            if (chunksWithDamage > 0) {
-                EASAddon.LOGGER.info("Tornado {} damage tracking: {} total chunks, {} processed real-time, {} marked for retroactive", 
-                    tornadoData.getId(), chunksWithDamage, chunksProcessedRealTime, chunksMarkedForRetroactive);
-            }
-        }
-    } catch (Exception e) {
-        EASAddon.LOGGER.error("Error tracking damaged chunks: {}", e.getMessage());
-    }
-}
 
 /**
  * ADDED: Mark a chunk for retroactive damage calculation when it loads
@@ -1491,6 +1309,371 @@ private Object getWeatherHandler(Level level) {
             EASAddon.LOGGER.debug("Error scanning for existing evidence: {}", e.getMessage());
         }
     }
+    
+    
+    
+    
+    /**
+     * CRITICAL FIX: Clean up tornado data to prevent massive lists and duplicates
+     */
+    public void performMaintenanceCleanup() {
+        long currentTime = System.currentTimeMillis();
+        int initialCount = trackedTornadoes.size();
+        
+        // Step 1: Remove obvious duplicates (same position, same time)
+        Map<String, List<TornadoData>> positionGroups = new HashMap<>();
+        
+        for (TornadoData tornado : new ArrayList<>(trackedTornadoes.values())) {
+            if (!tornado.getPositionHistory().isEmpty()) {
+                Vec3 firstPos = tornado.getPositionHistory().get(0).position;
+                long firstTime = tornado.getPositionHistory().get(0).timestamp;
+                
+                // Create a key based on rounded position and time window
+                String key = String.format("%.0f_%.0f_%.0f_%d", 
+                    Math.round(firstPos.x / 10) * 10,
+                    Math.round(firstPos.y / 10) * 10, 
+                    Math.round(firstPos.z / 10) * 10,
+                    firstTime / 60000); // 1-minute time windows
+                    
+                positionGroups.computeIfAbsent(key, k -> new ArrayList<>()).add(tornado);
+            }
+        }
+        
+        // Step 2: For each position group with multiple tornadoes, keep only the best one
+        int duplicatesRemoved = 0;
+        for (List<TornadoData> group : positionGroups.values()) {
+            if (group.size() > 1) {
+                // Sort by: 1) Active status, 2) Has survey data, 3) Position history length, 4) Max windspeed
+                group.sort((a, b) -> {
+                    if (a.isActive() && !b.isActive()) return -1;
+                    if (!a.isActive() && b.isActive()) return 1;
+                    
+                    if (a.isSurveyed() && !b.isSurveyed()) return -1;
+                    if (!a.isSurveyed() && b.isSurveyed()) return 1;
+                    
+                    int posCountDiff = b.getPositionHistory().size() - a.getPositionHistory().size();
+                    if (posCountDiff != 0) return posCountDiff;
+                    
+                    return Integer.compare(b.getMaxWindspeed(), a.getMaxWindspeed());
+                });
+                
+                // Keep the first (best) tornado, remove the rest
+                TornadoData keepTornado = group.get(0);
+                for (int i = 1; i < group.size(); i++) {
+                    TornadoData removeTornado = group.get(i);
+                    trackedTornadoes.remove(removeTornado.getId());
+                    duplicatesRemoved++;
+                    
+                    EASAddon.LOGGER.debug("Removed duplicate tornado {} (keeping {})", 
+                                        removeTornado.getId(), keepTornado.getId());
+                }
+            }
+        }
+        
+        // Step 3: Remove tornadoes with excessive position history (path length sanity check)
+        int excessiveHistoryRemoved = 0;
+        for (TornadoData tornado : new ArrayList<>(trackedTornadoes.values())) {
+            List<TornadoData.PositionRecord> history = tornado.getPositionHistory();
+            
+            // If tornado has more than 1000 position records or path length > 50km, it's probably corrupt
+            if (history.size() > 1000 || tornado.getTotalPathLength() > 50000) {
+                trackedTornadoes.remove(tornado.getId());
+                excessiveHistoryRemoved++;
+                
+                EASAddon.LOGGER.warn("Removed tornado {} with excessive data: {} positions, {:.1f}km path", 
+                                   tornado.getId(), history.size(), tornado.getTotalPathLength() / 1000.0);
+            }
+        }
+        
+        // Step 4: Remove very old inactive tornadoes (older than 1 hour)
+        int oldTornadoesRemoved = 0;
+        for (TornadoData tornado : new ArrayList<>(trackedTornadoes.values())) {
+            if (!tornado.isActive() && (currentTime - tornado.getLastSeenTime()) > 3600000) { // 1 hour
+                trackedTornadoes.remove(tornado.getId());
+                oldTornadoesRemoved++;
+            }
+        }
+        
+        int finalCount = trackedTornadoes.size();
+        int totalRemoved = initialCount - finalCount;
+        
+        if (totalRemoved > 0) {
+            EASAddon.LOGGER.info("Maintenance cleanup completed: {} -> {} tornadoes ({} removed)", 
+                               initialCount, finalCount, totalRemoved);
+            EASAddon.LOGGER.info("  Duplicates removed: {}", duplicatesRemoved);
+            EASAddon.LOGGER.info("  Excessive history removed: {}", excessiveHistoryRemoved);
+            EASAddon.LOGGER.info("  Old inactive removed: {}", oldTornadoesRemoved);
+            
+            // Force save after cleanup
+            forceSave();
+        }
+    }
+
+    /**
+     * FIXED: Enhanced position tracking with duplicate prevention
+     */
+    private void trackDamagedChunks(Object storm, TornadoData tornadoData) {
+        try {
+            int windspeed = (Integer) stormWindspeedField.get(storm);
+            int stage = (Integer) stormStageField.get(storm);
+            Vec3 position = (Vec3) stormPositionField.get(storm);
+            float width = (Float) stormWidthField.get(storm);
+            
+            // Only track significant damage (prevent weak tornadoes from creating excessive chunk lists)
+            if (stage >= 3 && windspeed >= 40 && width >= 5.0f) {
+                
+                // Use PMWeather's actual damage radius calculation
+                int windfieldWidth = Math.max((int)width, 40);
+                float damageRadius = windfieldWidth * 1.5f; // Reduced from 2.0f to prevent excessive chunks
+                
+                // Cap at reasonable maximum to prevent excessive chunk checking
+                damageRadius = Math.min(damageRadius, 150.0f); // Reduced from 200.0f
+                
+                int chunkRadius = (int) Math.ceil(damageRadius / 16.0);
+                ChunkPos centerChunk = new ChunkPos(new BlockPos((int)position.x, (int)position.y, (int)position.z));
+                
+                Level level = Minecraft.getInstance().level;
+                if (level == null) return;
+                
+                // FIXED: Limit the number of chunks we process per update to prevent performance issues
+                int maxChunksPerUpdate = 25; // Limit chunk processing
+                int chunksProcessed = 0;
+                
+                for (int dx = -chunkRadius; dx <= chunkRadius && chunksProcessed < maxChunksPerUpdate; dx++) {
+                    for (int dz = -chunkRadius; dz <= chunkRadius && chunksProcessed < maxChunksPerUpdate; dz++) {
+                        ChunkPos chunkPos = new ChunkPos(centerChunk.x + dx, centerChunk.z + dz);
+                        
+                        // Calculate distance from chunk center to tornado
+                        double chunkCenterX = chunkPos.x * 16 + 8;
+                        double chunkCenterZ = chunkPos.z * 16 + 8;
+                        double distanceToTornado = Math.sqrt(
+                            Math.pow(chunkCenterX - position.x, 2) + 
+                            Math.pow(chunkCenterZ - position.z, 2)
+                        );
+                        
+                        // Only add chunks that are actually within damage radius
+                        if (distanceToTornado <= damageRadius) {
+                            // FIXED: Prevent duplicate chunk additions
+                            if (!tornadoData.getDamagedChunks().contains(chunkPos)) {
+                                tornadoData.addDamagedChunk(chunkPos);
+                            }
+                            chunksProcessed++;
+                        }
+                    }
+                }
+                
+                // FIXED: Limit total damaged chunks per tornado to prevent memory issues
+                Set<ChunkPos> damagedChunks = tornadoData.getDamagedChunks();
+                if (damagedChunks.size() > 500) { // Maximum 500 chunks per tornado
+                    EASAddon.LOGGER.warn("Tornado {} has excessive damaged chunks ({}), limiting to prevent memory issues", 
+                                       tornadoData.getId(), damagedChunks.size());
+                    
+                    // Keep only the most recent 500 chunks (convert to list, sort by distance, keep closest)
+                    List<ChunkPos> chunkList = new ArrayList<>(damagedChunks);
+                    chunkList.sort((a, b) -> {
+                        double distA = Math.sqrt(Math.pow((a.x * 16 + 8) - position.x, 2) + Math.pow((a.z * 16 + 8) - position.z, 2));
+                        double distB = Math.sqrt(Math.pow((b.x * 16 + 8) - position.x, 2) + Math.pow((b.z * 16 + 8) - position.z, 2));
+                        return Double.compare(distA, distB);
+                    });
+                    
+                    // Clear and re-add only the closest 500 chunks
+                    damagedChunks.clear();
+                    for (int i = 0; i < Math.min(500, chunkList.size()); i++) {
+                        damagedChunks.add(chunkList.get(i));
+                    }
+                }
+            }
+        } catch (Exception e) {
+            EASAddon.LOGGER.error("Error tracking damaged chunks for tornado {}: {}", tornadoData.getId(), e.getMessage());
+        }
+    }
+
+    /**
+     * ENHANCED: Add periodic maintenance to the tick handler
+     */
+    @SubscribeEvent
+    public void onClientTick(ClientTickEvent.Pre event) {
+        tickCounter++;
+        
+        // Update tornado tracking every 20 ticks (1 second)
+        if (tickCounter % 20 == 0) {
+            Level level = Minecraft.getInstance().level;
+            if (level != null) {
+                updateTornadoTracking(level);
+            }
+        }
+        
+        // Clean up inactive tornadoes every 200 ticks (10 seconds)  
+        if (tickCounter % 200 == 0) {
+            cleanupInactiveTornadoes();
+        }
+        
+        // ADDED: Perform deep maintenance cleanup every 6000 ticks (5 minutes)
+        if (tickCounter % 6000 == 0) {
+            performMaintenanceCleanup();
+        }
+        
+        // Force save every 1200 ticks (1 minute)
+        if (tickCounter % 1200 == 0) {
+            forceSave();
+        }
+    }
+
+    /**
+     * FIXED: Enhanced tornado tracking with proper status management and duplicate prevention
+     */
+    private void updateTornadoTracking(Level level) {
+        if (!isTrackingEnabled()) return;
+        
+        try {
+            // Get current weather handler - FIXED: Use existing getWeatherHandler method
+            Object weatherHandler = getWeatherHandler(level);
+            if (weatherHandler == null) return;
+            
+            // Get current storms list
+            @SuppressWarnings("unchecked")
+            List<Object> currentStorms = (List<Object>) getStormsMethod.invoke(weatherHandler);
+            if (currentStorms == null) return;
+            
+            // Track all storm IDs currently active in PMWeather
+            Set<Long> activeStormIds = new HashSet<>();
+            
+            // Process each active storm
+            for (Object storm : currentStorms) {
+                try {
+                    // Extract storm data
+                    int stage = (Integer) stormStageField.get(storm);
+                    int type = (Integer) stormTypeField.get(storm);
+                    boolean dead = (Boolean) stormDeadField.get(storm);
+                    
+                    // Only track tornadoes (stage 3+, type 0) that are not dead
+                    if (stage < 3 || type != 0 || dead) continue;
+                    
+                    long stormId = (Long) stormIDField.get(storm);
+                    Vec3 position = (Vec3) stormPositionField.get(storm);
+                    int windspeed = (Integer) stormWindspeedField.get(storm);
+                    float width = (Float) stormWidthField.get(storm);
+                    
+                    // Add to active storm tracking
+                    activeStormIds.add(stormId);
+                    
+                    // FIXED: Prevent duplicate tracking - only create new if doesn't exist
+                    TornadoData tornadoData = trackedTornadoes.get(stormId);
+                    if (tornadoData == null) {
+                        tornadoData = new TornadoData(stormId);
+                        trackedTornadoes.put(stormId, tornadoData);
+                        EASAddon.LOGGER.info("Started tracking new tornado: ID={}, Windspeed={}mph, Width={}", 
+                                           stormId, windspeed, width);
+                    } else {
+                        // FIXED: Ensure tornado is marked as active if PMWeather reports it as active
+                        if (!tornadoData.isActive()) {
+                            tornadoData.setActive(true);
+                            EASAddon.LOGGER.info("Reactivated tornado {} (was inactive but PMWeather reports as active)", stormId);
+                        }
+                    }
+                    
+                    // FIXED: Only update data if tornado is truly active (windspeed > 0 OR width > 0)
+                    // This prevents the "roping out" issue where 0mph winds show incorrect width
+                    if (windspeed > 0 || width > 5.0f) {
+                        tornadoData.updateData(windspeed, width, stage, position);
+                        
+                        // Track damaged chunks only for significant tornadoes
+                        if (windspeed >= 40 && width >= 5.0f) {
+                            trackDamagedChunks(storm, tornadoData);
+                        }
+                    } else {
+                        // Tornado is roping out - just update position but don't record bogus width/windspeed
+                        tornadoData.setLastSeenTime(System.currentTimeMillis());
+                        if (tornadoData.getPositionHistory().isEmpty() || 
+                            System.currentTimeMillis() - tornadoData.getPositionHistory().get(tornadoData.getPositionHistory().size() - 1).timestamp > 10000) {
+                            // Only add position record with actual historical max values, not current zeros
+                            int historicalMaxWind = tornadoData.getRawMaxWindspeed();
+                            float historicalMaxWidth = tornadoData.getMaxWidth();
+                            tornadoData.addPositionRecord(new TornadoData.PositionRecord(position, System.currentTimeMillis(), historicalMaxWind, historicalMaxWidth));
+                        }
+                    }
+                    
+                } catch (Exception e) {
+                    EASAddon.LOGGER.error("Error processing storm: {}", e.getMessage());
+                }
+            }
+            
+            // FIXED: Mark tornadoes as inactive ONLY if they haven't been seen for 30+ seconds AND are not in active storms
+            long currentTime = System.currentTimeMillis();
+            for (TornadoData tornado : trackedTornadoes.values()) {
+                if (tornado.isActive()) {
+                    // Check if this tornado is no longer in the active storms list
+                    if (!activeStormIds.contains(tornado.getId())) {
+                        // Give it a 30-second grace period before marking inactive
+                        if ((currentTime - tornado.getLastSeenTime()) > 30000) {
+                            tornado.markInactive();
+                            EASAddon.LOGGER.info("Marked tornado {} as inactive (missing from storms list for >30s)", 
+                                               tornado.getId());
+                        }
+                    }
+                }
+            }
+            
+        } catch (Exception e) {
+            EASAddon.LOGGER.error("Error in tornado tracking: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * FIXED: Return properly sorted tornado data - active first, then by ID
+     */
+    public List<TornadoData> getAllTornadoData() {
+        List<TornadoData> sortedList = new ArrayList<>(trackedTornadoes.values());
+        
+        // Sort: Active tornadoes first (by ID), then inactive tornadoes (by ID)
+        sortedList.sort((a, b) -> {
+            // First sort by active status (active first)
+            if (a.isActive() && !b.isActive()) return -1;
+            if (!a.isActive() && b.isActive()) return 1;
+            
+            // Then sort by ID within same status
+            return Long.compare(a.getId(), b.getId());
+        });
+        
+        return sortedList;
+    }
+
+
+    /**
+     * FIXED: Enhanced tornado tracking with proper status management and duplicate prevention
+     */
+
+
+    /**
+     * FIXED: Clean up old inactive tornadoes to prevent memory leaks and massive lists
+     */
+    private void cleanupInactiveTornadoes() {
+        long currentTime = System.currentTimeMillis();
+        List<Long> toRemove = new ArrayList<>();
+        
+        for (TornadoData tornado : trackedTornadoes.values()) {
+            // Remove tornadoes that have been inactive for more than 10 minutes
+            if (!tornado.isActive() && (currentTime - tornado.getLastSeenTime()) > 600000) {
+                toRemove.add(tornado.getId());
+            }
+        }
+        
+        for (Long id : toRemove) {
+            trackedTornadoes.remove(id);
+            EASAddon.LOGGER.debug("Cleaned up old inactive tornado: {}", id);
+        }
+    }
+
+    /**
+     * FIXED: Return properly sorted tornado data - active first, then by ID
+     */
+   
+    
+    
+    
+    
+    
+    
 
     /**
      * ADDED: Check if position is in a natural forest area
@@ -1587,9 +1770,6 @@ private Object getWeatherHandler(Level level) {
         return totalChecked > 0 && (double)grassBlocks / totalChecked > 0.4;
     }
     
-    public List<TornadoData> getAllTornadoData() {
-        return new ArrayList<>(trackedTornadoes.values());
-    }
     
     public List<TornadoData> getActiveTornadoData() {
         return trackedTornadoes.values().stream()

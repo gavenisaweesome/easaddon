@@ -5,6 +5,8 @@ import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.phys.Vec3;
 import java.util.*;
 
+import com.burrows.easaddon.EASAddon;
+
 public class TornadoData {
     private final long id;
     private boolean active;
@@ -57,27 +59,71 @@ public class TornadoData {
         this.lastSeenTime = System.currentTimeMillis();
         this.lastKnownPosition = position;
         
+        // FIXED: Handle roping out properly - don't record bogus width values when windspeed is 0
+        boolean isRopingOut = (currentWindspeed <= 0 && currentWidth > 0);
+        
         // Track position every 10 seconds
         if (System.currentTimeMillis() - lastPositionRecordTime >= 10000) {
-            positionHistory.add(new PositionRecord(position, System.currentTimeMillis(), currentWindspeed, currentWidth));
+            if (isRopingOut) {
+                // When roping out, use the historical max width instead of current inflated width
+                // This prevents the 1/10th max size display issue
+                float historicalWidth = Math.min(this.maxWidth, currentWidth);
+                positionHistory.add(new PositionRecord(position, System.currentTimeMillis(), 0, historicalWidth));
+                EASAddon.LOGGER.debug("Tornado {} roping out - using historical width {:.1f} instead of current {:.1f}", 
+                                    id, historicalWidth, currentWidth);
+            } else {
+                // Normal tracking with actual values
+                positionHistory.add(new PositionRecord(position, System.currentTimeMillis(), currentWindspeed, currentWidth));
+            }
             lastPositionRecordTime = System.currentTimeMillis();
         }
         
-        // Track the maximum windspeed ever recorded for this tornado
-        if (!hasRecordedData || currentWindspeed > this.maxWindspeed) {
-            this.maxWindspeed = currentWindspeed;
+        // FIXED: Only update max values if we have meaningful data (not roping out)
+        if (!isRopingOut) {
+            // Track the maximum windspeed ever recorded for this tornado
+            if (!hasRecordedData || currentWindspeed > this.maxWindspeed) {
+                this.maxWindspeed = currentWindspeed;
+            }
+            
+            // Track the maximum width ever recorded for this tornado
+            if (!hasRecordedData || currentWidth > this.maxWidth) {
+                this.maxWidth = currentWidth;
+            }
+            
+            // Mark that we've recorded at least one data point
+            this.hasRecordedData = true;
+        } else {
+            // When roping out, we still mark as having recorded data but don't update maximums
+            this.hasRecordedData = true;
+            
+            // Log the roping out process
+            EASAddon.LOGGER.debug("Tornado {} roping out: windspeed={}mph, reported_width={:.1f}, max_width={:.1f}", 
+                                id, currentWindspeed, currentWidth, this.maxWidth);
         }
-        
-        // Track the maximum width ever recorded for this tornado
-        if (!hasRecordedData || currentWidth > this.maxWidth) {
-            this.maxWidth = currentWidth;
-        }
-        
-        // Mark that we've recorded at least one data point
-        this.hasRecordedData = true;
         
         // FIXED: Do NOT auto-update rating - keep as EFU until surveyed
         // Rating should only be changed through setSurveyResults()
+    }
+
+    /**
+     * FIXED: Enhanced inactive marking that handles roping out properly
+     */
+    public void markInactive() {
+        this.active = false;
+        
+        // Add final position if we have one and it's been a while since last record
+        if (lastKnownPosition != null && (positionHistory.isEmpty() || 
+            System.currentTimeMillis() - positionHistory.get(positionHistory.size() - 1).timestamp > 5000)) {
+            
+            // Use historical values for the final position record, not zeros
+            int finalWindspeed = 0; // Tornado has dissipated
+            float finalWidth = this.maxWidth * 0.1f; // Small remnant width
+            
+            positionHistory.add(new PositionRecord(lastKnownPosition, System.currentTimeMillis(), finalWindspeed, finalWidth));
+            
+            EASAddon.LOGGER.info("Tornado {} marked inactive - final position recorded with width {:.1f}", 
+                               id, finalWidth);
+        }
     }
     
     public void addDamagedChunk(ChunkPos chunkPos) {
@@ -86,14 +132,7 @@ public class TornadoData {
     
     // REMOVED: updateRating() method - no more auto-rating
     
-    public void markInactive() {
-        this.active = false;
-        // Add final position if we have one
-        if (lastKnownPosition != null && (positionHistory.isEmpty() || 
-            System.currentTimeMillis() - positionHistory.get(positionHistory.size() - 1).timestamp > 5000)) {
-            positionHistory.add(new PositionRecord(lastKnownPosition, System.currentTimeMillis(), 0, 0));
-        }
-    }
+   
     
     // ========== SURVEY RESULT METHODS ==========
     

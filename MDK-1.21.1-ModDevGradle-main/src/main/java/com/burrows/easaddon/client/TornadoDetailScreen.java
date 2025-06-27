@@ -1,5 +1,6 @@
 package com.burrows.easaddon.client;
 
+import com.burrows.easaddon.EASAddon;
 import com.burrows.easaddon.tornado.TornadoData;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
@@ -57,8 +58,212 @@ public class TornadoDetailScreen extends Screen {
         calculateMapBounds();
     }
     
+
+    
+
+    
+    // FIXED: Add method to recalculate bounds for active tornadoes
+ // FIXED: Add method to recalculate bounds for active tornadoes with proper updates
+// FIXED: Instead of reassigning tornadoData (which is final), get fresh data when needed
+private void recalculateBoundsIfNeeded() {
+    // Always recalculate if tornado is still active
+    if (tornadoData.isActive()) {
+        // Get current tornado position from tracker - FIXED: Don't reassign, just get current data
+        TornadoData currentData = com.burrows.easaddon.tornado.TornadoTracker.getInstance().getTornadoData(tornadoData.getId());
+        if (currentData != null && !currentData.getPositionHistory().isEmpty()) {
+            
+            // Get the latest position from the tracker
+            List<TornadoData.PositionRecord> currentHistory = currentData.getPositionHistory();
+            TornadoData.PositionRecord latest = currentHistory.get(currentHistory.size() - 1);
+            
+            // Check if the latest position is outside current bounds with margin
+            double margin = Math.max(100, tornadoData.getMaxWidth() * 2); // Dynamic margin based on tornado size
+            
+            boolean needsRecalc = false;
+            if (latest.position.x < minX + margin || latest.position.x > maxX - margin ||
+                latest.position.z < minZ + margin || latest.position.z > maxZ - margin) {
+                needsRecalc = true;
+            }
+            
+            // Also recalculate if tornado has grown significantly
+            if (currentData.getMaxWidth() > tornadoData.getMaxWidth() * 1.5) {
+                needsRecalc = true;
+            }
+            
+            if (needsRecalc) {
+                EASAddon.LOGGER.debug("Recalculating map bounds for active tornado {} - position outside bounds", tornadoData.getId());
+                
+                // FIXED: Instead of reassigning tornadoData, use currentData for calculations but keep original reference
+                // Update position history by copying from current data
+                tornadoData.clearPositionHistory();
+                for (TornadoData.PositionRecord record : currentHistory) {
+                    tornadoData.addPositionRecord(record);
+                }
+                
+                // Update max values if they've grown
+                if (currentData.getMaxWidth() > tornadoData.getMaxWidth()) {
+                    tornadoData.setMaxWidth(currentData.getMaxWidth());
+                }
+                if (currentData.getMaxWindspeed() > tornadoData.getMaxWindspeed()) {
+                    tornadoData.setMaxWindspeed(currentData.getMaxWindspeed());
+                }
+                
+                // Recalculate bounds with updated data
+                calculateMapBounds();
+                
+                // Force a scale recalculation
+                calculateResponsiveDimensions();
+            }
+        }
+    }
+}
+
+@Override
+public void render(GuiGraphics guiGraphics, int mouseX, int mouseY, float partialTick) {
+    // FIXED: Always recalculate bounds if needed before rendering
+    recalculateBoundsIfNeeded();
+    
+    // FIXED: Get fresh data for display without reassigning the field
+    TornadoData currentDisplayData = tornadoData;
+    if (tornadoData.isActive()) {
+        TornadoData freshData = com.burrows.easaddon.tornado.TornadoTracker.getInstance().getTornadoData(tornadoData.getId());
+        if (freshData != null) {
+            currentDisplayData = freshData; // Use fresh data for display
+        }
+    }
+    
+    // Render background
+    this.renderDirtBackground(guiGraphics);
+    
+    // Draw GUI background with proper dimensions
+    guiGraphics.fill(leftPos, topPos, leftPos + actualGuiWidth, topPos + actualGuiHeight, 0xC0101010);
+    guiGraphics.fill(leftPos + 2, topPos + 2, leftPos + actualGuiWidth - 2, topPos + actualGuiHeight - 2, 0xC0C0C0C0);
+    
+    // Draw title
+    guiGraphics.drawCenteredString(font, this.title, leftPos + actualGuiWidth / 2, topPos + 8, 0xFFFFFF);
+    
+    // FIXED: Add real-time status indicator for active tornadoes using current data
+    String statusText = currentDisplayData.isActive() ? "§c§lACTIVE" : "§7ENDED";
+    guiGraphics.drawCenteredString(font, statusText, leftPos + actualGuiWidth / 2, topPos + 20, 
+        currentDisplayData.isActive() ? 0xFF4444 : 0x808080);
+    
+    // Draw tornado statistics with proper spacing using current data
+    int statsY = topPos + 35;
+    int textSize = actualGuiWidth < 300 ? 6 : 8; // Smaller text for smaller GUIs
+    
+    guiGraphics.drawString(font, "Max Wind: " + currentDisplayData.getMaxWindspeed() + " mph", leftPos + 10, statsY, 0xFFFFFF, true);
+    guiGraphics.drawString(font, "Max Width: " + String.format("%.1f", currentDisplayData.getMaxWidth()), leftPos + 120, statsY, 0xFFFFFF, true);
+    
+    // FIXED: Only show path length if there's enough space
+    if (actualGuiWidth >= 300) {
+        guiGraphics.drawString(font, "Path Length: " + String.format("%.1f blocks", currentDisplayData.getTotalPathLength()), leftPos + 210, statsY, 0xFFFFFF, true);
+    }
+    
+    statsY += 15;
+    guiGraphics.drawString(font, "Duration: " + formatDuration(currentDisplayData.getLastSeenTime() - currentDisplayData.getFirstSeenTime()), 
+        leftPos + 10, statsY, 0xFFFFFF, true);
+    guiGraphics.drawString(font, "Chunks Affected: " + currentDisplayData.getDamagedChunks().size(), 
+        leftPos + 120, statsY, 0xFFFFFF, true);
+    
+    // Draw separator
+    guiGraphics.hLine(leftPos + 5, leftPos + actualGuiWidth - 5, statsY + 12, 0xFF808080);
+    
+    if (showMap) {
+        renderSatelliteMap(guiGraphics);
+    } else {
+        renderCoordinatesList(guiGraphics);
+    }
+    
+    // Render widgets (buttons) on top
+    for (var widget : this.renderables) {
+        widget.render(guiGraphics, mouseX, mouseY, partialTick);
+    }
+}
+
+// FIXED: Update refresh button to handle final field properly
+private void refreshTornadoData() {
+    // Get fresh tornado data from tracker
+    TornadoData freshData = com.burrows.easaddon.tornado.TornadoTracker.getInstance().getTornadoData(tornadoData.getId());
+    if (freshData != null) {
+        // FIXED: Update the existing tornado data object instead of reassigning
+        // Copy position history
+        tornadoData.clearPositionHistory();
+        for (TornadoData.PositionRecord record : freshData.getPositionHistory()) {
+            tornadoData.addPositionRecord(record);
+        }
+        
+        // Update other fields
+        tornadoData.setActive(freshData.isActive());
+        tornadoData.setMaxWindspeed(freshData.getMaxWindspeed());
+        tornadoData.setMaxWidth(freshData.getMaxWidth());
+        tornadoData.setLastSeenTime(freshData.getLastSeenTime());
+        
+        // Update survey data if present
+        if (freshData.isSurveyed()) {
+            tornadoData.setSurveyResults(freshData.getSurveyedBy(), freshData.getSurveyedEFRating(), freshData.getSurveyedMaxWindspeed());
+        }
+        
+        // Recalculate bounds and dimensions
+        calculateMapBounds();
+        calculateResponsiveDimensions();
+        
+        EASAddon.LOGGER.debug("Refreshed tornado data for ID: {}", tornadoData.getId());
+    }
+}
+
+@Override
+protected void init() {
+    super.init();
+    
+    // FIXED: Calculate responsive dimensions first, then recalculate bounds
+    calculateResponsiveDimensions();
+    calculateMapBounds(); // Ensure bounds are current
+    
+    // FIXED: Use responsive button positioning - ensure buttons are always visible
+    int buttonY = Math.max(this.topPos + actualGuiHeight - 25, this.height - 30); // At least 30px from bottom
+    int buttonSpacing = 85; // Space between buttons
+    
+    // FIXED: Adjust button width based on available space
+    int buttonWidth = Math.max(40, Math.min(100, actualGuiWidth / 5)); // Responsive button width
+    int smallButtonWidth = Math.max(30, buttonWidth - 20);
+    
+    // Back button (left side)
+    this.addRenderableWidget(Button.builder(Component.literal("Back"), 
+        button -> this.minecraft.setScreen(parentScreen))
+        .bounds(this.leftPos + 10, buttonY, smallButtonWidth + 20, 20)
+        .build());
+    
+    // Survey Damage button (left-center) - adjust text based on button size
+    String surveyText = buttonWidth >= 80 ? "Survey Damage" : "Survey";
+    this.addRenderableWidget(Button.builder(Component.literal(surveyText), 
+        button -> this.startDamageSurvey())
+        .bounds(this.leftPos + 80, buttonY, buttonWidth, 20)
+        .build());
+        
+    // Toggle Map/List button (right-center)
+    String toggleText = buttonWidth >= 70 ? (showMap ? "Show List" : "Show Map") : (showMap ? "List" : "Map");
+    this.addRenderableWidget(Button.builder(Component.literal(toggleText), 
+        button -> {
+            this.showMap = !this.showMap;
+            // Update button text immediately
+            this.clearWidgets();
+            this.init(); // Reinitialize to update button text
+        })
+        .bounds(this.leftPos + 190, buttonY, buttonWidth - 10, 20)
+        .build());
+        
+    // Refresh button (right side) - FIXED: Use new refresh method
+    this.addRenderableWidget(Button.builder(Component.literal("Refresh"), 
+        button -> {
+            refreshTornadoData();
+        })
+        .bounds(this.leftPos + actualGuiWidth - 70, buttonY, 60, 20)
+        .build());
+}
+
+
     /**
-     * ADDED: Calculate responsive GUI dimensions based on screen size
+     * FIXED: Calculate responsive GUI dimensions based on screen size with proper bounds
      */
     private void calculateResponsiveDimensions() {
         // Calculate available screen space with padding for safety
@@ -90,10 +295,13 @@ public class TornadoDetailScreen extends Screen {
         this.topPos = (this.height - actualGuiHeight) / 2;
         
         // Debug logging
-        com.burrows.easaddon.EASAddon.LOGGER.info("TornadoDetailScreen: Screen {}x{}, Scale {:.2f}, GUI {}x{}, Map {}", 
+        com.burrows.easaddon.EASAddon.LOGGER.debug("TornadoDetailScreen: Screen {}x{}, Scale {:.2f}, GUI {}x{}, Map {}", 
             this.width, this.height, scale, actualGuiWidth, actualGuiHeight, actualMapSize);
     }
-    
+
+    /**
+     * FIXED: Enhanced map bounds calculation with dynamic range and active tornado support
+     */
     private void calculateMapBounds() {
         List<TornadoData.PositionRecord> history = tornadoData.getPositionHistory();
         if (history.isEmpty()) {
@@ -101,10 +309,10 @@ public class TornadoDetailScreen extends Screen {
             Player player = Minecraft.getInstance().player;
             if (player != null) {
                 Vec3 playerPos = player.position();
-                minX = playerPos.x - 100;
-                maxX = playerPos.x + 100;
-                minZ = playerPos.z - 100;
-                maxZ = playerPos.z + 100;
+                minX = playerPos.x - 200;
+                maxX = playerPos.x + 200;
+                minZ = playerPos.z - 200;
+                maxZ = playerPos.z + 200;
             } else {
                 minX = maxX = minZ = maxZ = 0;
             }
@@ -140,7 +348,7 @@ public class TornadoDetailScreen extends Screen {
         // FIXED: Dynamic scaling - ensure minimum useful range
         double currentRangeX = maxX - minX;
         double currentRangeZ = maxZ - minZ;
-        double minRange = Math.max(200, maxWidth * 3); // Minimum 200 blocks or 3x tornado width
+        double minRange = Math.max(400, maxWidth * 4); // Increased minimum range for active tornadoes
         
         if (currentRangeX < minRange) {
             double expand = (minRange - currentRangeX) / 2;
@@ -155,7 +363,7 @@ public class TornadoDetailScreen extends Screen {
         }
         
         // Add padding based on maximum tornado width plus extra for visibility
-        double padding = Math.max(50, maxWidth + 30);
+        double padding = Math.max(100, maxWidth * 2 + 50); // Increased padding for better visibility
         minX -= padding;
         maxX += padding;
         minZ -= padding;
@@ -173,87 +381,13 @@ public class TornadoDetailScreen extends Screen {
             minX -= diff;
             maxX += diff;
         }
-    }
-    
-    // FIXED: Add method to recalculate bounds for active tornadoes
-    private void recalculateBoundsIfNeeded() {
-        // Only recalculate if tornado is still active
-        if (tornadoData.isActive()) {
-            // Get current tornado position if it exists in tracking
-            TornadoData currentData = com.burrows.easaddon.tornado.TornadoTracker.getInstance().getTornadoData(tornadoData.getId());
-            if (currentData != null && !currentData.getPositionHistory().isEmpty()) {
-                // Check if the latest position is outside current bounds
-                List<TornadoData.PositionRecord> history = currentData.getPositionHistory();
-                TornadoData.PositionRecord latest = history.get(history.size() - 1);
-                
-                boolean needsRecalc = false;
-                double margin = 50; // Margin before recalculating
-                
-                if (latest.position.x < minX + margin || latest.position.x > maxX - margin ||
-                    latest.position.z < minZ + margin || latest.position.z > maxZ - margin) {
-                    needsRecalc = true;
-                }
-                
-                if (needsRecalc) {
-                    // Update our tornado data with latest information
-                    this.tornadoData.getPositionHistory().clear();
-                    for (TornadoData.PositionRecord record : history) {
-                        this.tornadoData.addPositionRecord(record);
-                    }
-                    
-                    // Recalculate bounds
-                    calculateMapBounds();
-                }
-            }
-        }
-    }
-    
-@Override
-protected void init() {
-    super.init();
-    
-    // FIXED: Calculate responsive dimensions first
-    calculateResponsiveDimensions();
-    
-    // FIXED: Use responsive button positioning - ensure buttons are always visible
-    int buttonY = Math.max(this.topPos + actualGuiHeight - 25, this.height - 30); // At least 30px from bottom
-    int buttonSpacing = 85; // Space between buttons
-    
-    // FIXED: Adjust button width based on available space
-    int buttonWidth = Math.max(40, Math.min(100, actualGuiWidth / 5)); // Responsive button width
-    int smallButtonWidth = Math.max(30, buttonWidth - 20);
-    
-    // Back button (left side)
-    this.addRenderableWidget(Button.builder(Component.literal("Back"), 
-        button -> this.minecraft.setScreen(parentScreen))
-        .bounds(this.leftPos + 10, buttonY, smallButtonWidth + 20, 20)
-        .build());
-    
-    // Survey Damage button (left-center) - adjust text based on button size
-    String surveyText = buttonWidth >= 80 ? "Survey Damage" : "Survey";
-    this.addRenderableWidget(Button.builder(Component.literal(surveyText), 
-        button -> this.startDamageSurvey())
-        .bounds(this.leftPos + 80, buttonY, buttonWidth, 20)
-        .build());
         
-    // Toggle Map/List button (right-center)
-    String toggleText = buttonWidth >= 70 ? (showMap ? "Show List" : "Show Map") : (showMap ? "List" : "Map");
-    this.addRenderableWidget(Button.builder(Component.literal(toggleText), 
-        button -> {
-            this.showMap = !this.showMap;
-            String newText = buttonWidth >= 70 ? (showMap ? "Show List" : "Show Map") : (showMap ? "List" : "Map");
-            button.setMessage(Component.literal(newText));
-            this.scrollOffset = 0;
-        })
-        .bounds(this.leftPos + 190, buttonY, buttonWidth, 20)
-        .build());
+        EASAddon.LOGGER.debug("Map bounds calculated: X[{:.1f} to {:.1f}], Z[{:.1f} to {:.1f}], Range: {:.1f}", 
+            minX, maxX, minZ, maxZ, width);
+    }
+
     
-    // Close button (right side)
-    this.addRenderableWidget(Button.builder(Component.literal("Close"), 
-        button -> this.onClose())
-        .bounds(this.leftPos + actualGuiWidth - smallButtonWidth - 10, buttonY, smallButtonWidth, 20)
-        .build());
-}
+
     
     private void startDamageSurvey() {
         Player player = Minecraft.getInstance().player;
@@ -295,51 +429,7 @@ protected void init() {
         guiGraphics.fill(0, 0, this.width, this.height, 0xFF101010);
     }
     
-    @Override
-    public void render(GuiGraphics guiGraphics, int mouseX, int mouseY, float partialTick) {
-        // FIXED: Don't call super.renderBackground to avoid blur
-        this.renderDirtBackground(guiGraphics);
-        
-        // FIXED: Use actual dimensions instead of constants
-        // Main background
-        guiGraphics.fill(leftPos, topPos, leftPos + actualGuiWidth, topPos + actualGuiHeight, 0xC0101010);
-        guiGraphics.fill(leftPos + 2, topPos + 2, leftPos + actualGuiWidth - 2, topPos + actualGuiHeight - 2, 0xC0C0C0C0);
-        
-        // Title
-        guiGraphics.drawCenteredString(font, this.title, leftPos + actualGuiWidth / 2, topPos + 8, 0xFFFFFF);
-        
-        // Statistics summary - FIXED: Adjust font size and layout for smaller screens
-        int statsY = topPos + 25;
-        int statsTextSize = actualGuiWidth < 300 ? 6 : 8; // Smaller text for smaller GUIs
-        
-        guiGraphics.drawString(font, "Max Wind: " + tornadoData.getMaxWindspeed() + " mph", leftPos + 10, statsY, 0xFFFFFF, true);
-        guiGraphics.drawString(font, "Max Width: " + String.format("%.1f", tornadoData.getMaxWidth()), leftPos + 120, statsY, 0xFFFFFF, true);
-        
-        // FIXED: Only show path length if there's enough space
-        if (actualGuiWidth >= 300) {
-            guiGraphics.drawString(font, "Path Length: " + String.format("%.1f blocks", tornadoData.getTotalPathLength()), leftPos + 210, statsY, 0xFFFFFF, true);
-        }
-        
-        statsY += 15;
-        guiGraphics.drawString(font, "Duration: " + formatDuration(tornadoData.getLastSeenTime() - tornadoData.getFirstSeenTime()), 
-            leftPos + 10, statsY, 0xFFFFFF, true);
-        guiGraphics.drawString(font, "Chunks Affected: " + tornadoData.getDamagedChunks().size(), 
-            leftPos + 120, statsY, 0xFFFFFF, true);
-        
-        // Draw separator
-        guiGraphics.hLine(leftPos + 5, leftPos + actualGuiWidth - 5, statsY + 12, 0xFF808080);
-        
-        if (showMap) {
-            renderSatelliteMap(guiGraphics);
-        } else {
-            renderCoordinatesList(guiGraphics);
-        }
-        
-        // Render widgets (buttons) on top
-        for (var widget : this.renderables) {
-            widget.render(guiGraphics, mouseX, mouseY, partialTick);
-        }
-    }
+
     
 // NEW: Satellite-style map rendering - FIXED: Use actual dimensions
 private void renderSatelliteMap(GuiGraphics guiGraphics) {

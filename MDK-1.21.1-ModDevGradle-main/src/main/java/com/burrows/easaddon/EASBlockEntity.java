@@ -946,7 +946,16 @@ private void handleStormDetection(
         })) == null) continue;
         
         player.sendSystemMessage(msg);
-        player.playNotifySound(alertSound, SoundSource.MASTER, 1.0f, 1.0f);
+        level.playSound(
+                null,                                    // Play for all players in range 
+                player.getX(),                          // Player's X position
+                player.getY(),                          // Player's Y position  
+                player.getZ(),                          // Player's Z position
+                alertSound,                             // The EAS alert sound
+                SoundSource.MASTER,                     // Sound category
+                1.0f,                                   // Volume
+                1.0f                                    // Pitch
+            );player.playNotifySound(alertSound, SoundSource.MASTER, 1.0f, 1.0f);
     }
 }
 
