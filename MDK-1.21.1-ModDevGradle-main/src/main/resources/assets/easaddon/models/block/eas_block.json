@@ -1,0 +1,11 @@
+{
+  "parent": "minecraft:block/cube",
+  "textures": {
+    "down": "easaddon:block/eas_block_top",
+    "up": "easaddon:block/eas_block_top",
+    "north": "easaddon:block/eas_block_front",
+    "south": "easaddon:block/eas_block_back",
+    "west": "easaddon:block/eas_block_side",
+    "east": "easaddon:block/eas_block_side"
+  }
+}

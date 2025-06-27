@@ -1,0 +1,23 @@
+{
+  "block.easaddon.eas_block": "EAS Block",
+  "item.easaddon.eas_block": "EAS Block",
+  "item.easaddon.eas_transmitter": "EAS Transmitter",
+  "item.easaddon.damage_surveyor": "Damage Surveyor",
+  "item.easaddon.damage_surveyor.tooltip": "Right-click to view tornado tracking data",
+  "item.easaddon.radar_overlay": "Radar Overlay Block",
+  "itemGroup.easaddon.main": "EAS Addon",
+  "gui.easaddon.damage_surveyor.title": "Damage Surveyor",
+  "gui.easaddon.damage_surveyor.no_data": "No tornado data available",
+  "gui.easaddon.damage_surveyor.pmweather_missing": "PMWeather mod not detected!",
+  "gui.easaddon.damage_surveyor.header.id": "ID",
+  "gui.easaddon.damage_surveyor.header.status": "Status", 
+  "gui.easaddon.damage_surveyor.header.rating": "Rating",
+  "gui.easaddon.damage_surveyor.header.wind": "Max Windspeed",
+  "gui.easaddon.damage_surveyor.header.width": "Max Width",
+  "gui.easaddon.damage_surveyor.status.active": "ACTIVE",
+  "gui.easaddon.damage_surveyor.status.ended": "ENDED",
+  "gui.easaddon.damage_surveyor.touchdown": "Touchdown:",
+  "gui.easaddon.damage_surveyor.liftoff": "Liftoff:",
+  "gui.easaddon.damage_surveyor.not_recorded": "Not recorded",
+  "gui.easaddon.damage_surveyor.still_active": "Still active"
+}

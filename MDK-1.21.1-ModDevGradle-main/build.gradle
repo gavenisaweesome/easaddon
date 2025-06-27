@@ -1,0 +1,133 @@
+plugins {
+    id 'idea'
+    id 'java-library'
+    id 'maven-publish'
+    id 'net.neoforged.moddev' version '2.0.78'
+}
+
+// === Wrapper / toolchain ===
+tasks.named('wrapper', Wrapper).configure {
+    distributionType = Wrapper.DistributionType.BIN
+}
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+version = mod_version
+group   = mod_group_id
+
+base {
+    archivesName = mod_id
+}
+
+repositories {
+    // for your local pmweather jar
+    flatDir { dirs 'libs' }
+}
+
+// === NeoForge configuration ===
+neoForge {
+    version = project.neo_version
+
+    parchment {
+        mappingsVersion   = project.parchment_mappings_version
+        minecraftVersion  = project.parchment_minecraft_version
+    }
+
+    runs {
+        client { client(); systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id }
+        server { server(); programArgument '--nogui'; systemProperty 'neoforged.enabledGameTestNamespaces', project.mod_id }
+        gameTestServer { type = 'gameTestServer'; systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id }
+        data {
+            data()
+            programArguments.addAll(
+                '--mod', project.mod_id,
+                '--all',
+                '--output', file('src/generated/resources').absolutePath,
+                '--existing', file('src/main/resources').absolutePath
+            )
+        }
+        configureEach {
+            systemProperty 'forge.logging.markers', 'REGISTRIES'
+            logLevel = org.slf4j.event.Level.DEBUG
+        }
+    }
+
+    mods {
+        "${mod_id}" { sourceSet(sourceSets.main) }
+    }
+}
+
+// === Source sets ===
+sourceSets {
+    main {
+        java {
+            // Only compile your own code
+            srcDirs = ['src/main/java']
+        }
+        resources {
+            srcDirs = ['src/main/resources', 'src/generated/resources']
+        }
+    }
+}
+
+// === Dependencies ===
+configurations {
+    compileOnly {   // for reflection-only PMWeather API
+        extendsFrom configurations.annotationProcessor
+    }
+}
+
+dependencies {
+    // compileOnly so it doesn't end up in your final jar
+    compileOnly 'pmweather:pmweather:0.14.11-1.21.1-alpha'
+}
+
+// === Resource processing / mods.toml templating ===
+var generateModMetadata = tasks.register('generateModMetadata', ProcessResources) {
+    inputs.properties([
+        minecraft_version       : minecraft_version,
+        minecraft_version_range : minecraft_version_range,
+        neo_version             : neo_version,
+        neo_version_range       : neo_version_range,
+        loader_version_range    : loader_version_range,
+        mod_id                  : mod_id,
+        mod_name                : mod_name,
+        mod_license             : mod_license,
+        mod_version             : mod_version,
+        mod_authors             : mod_authors,
+        mod_description         : mod_description
+    ])
+    from 'src/main/templates'
+    into 'build/generated/sources/modMetadata'
+    expand inputs.properties
+}
+sourceSets.main.resources.srcDir generateModMetadata
+neoForge.ideSyncTask generateModMetadata
+
+// === Jar / publishing ===
+jar {
+    exclude 'dev/protomanly/**'   // don’t bundle PMWeather classes
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+        }
+    }
+    repositories {
+        maven {
+            url = uri("$projectDir/repo")
+        }
+    }
+}
+
+// IDE tweaks
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+idea {
+    module {
+        downloadSources = true
+        downloadJavadoc = true
+    }
+}

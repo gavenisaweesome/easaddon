@@ -1,0 +1,10 @@
+{
+  "eas_alert": {
+    "sounds": [
+      {
+        "name": "easaddon:eas_alert",
+        "stream": false
+      }
+    ]
+  }
+}

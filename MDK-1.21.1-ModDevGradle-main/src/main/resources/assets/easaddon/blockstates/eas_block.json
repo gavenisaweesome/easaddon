@@ -1,0 +1,27 @@
+{
+  "variants": {
+    "facing=north": {
+      "model": "easaddon:block/eas_block"
+    },
+    "facing=south": {
+      "model": "easaddon:block/eas_block",
+      "y": 180
+    },
+    "facing=west": {
+      "model": "easaddon:block/eas_block",
+      "y": 270
+    },
+    "facing=east": {
+      "model": "easaddon:block/eas_block",
+      "y": 90
+    },
+    "facing=up": {
+      "model": "easaddon:block/eas_block",
+      "x": 270
+    },
+    "facing=down": {
+      "model": "easaddon:block/eas_block",
+      "x": 90
+    }
+  }
+}

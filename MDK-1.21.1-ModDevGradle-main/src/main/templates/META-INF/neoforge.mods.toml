@@ -1,0 +1,40 @@
+# src/main/resources/META-INF/neoforge.mods.toml
+
+modLoader     = "javafml"               # the actual loader type
+loaderVersion = "${loader_version_range}"   # e.g. "[4.0,5.0)"
+license       = "${mod_license}"
+
+[[mods]]
+modId       = "easaddon"
+displayName = "EAS Addon for ProtoManly"
+version     = "${mod_version}"
+authors     = ["${mod_authors}"]
+description = '''
+${mod_description}
+'''
+
+[[mixins]]
+config="easaddon.mixins.json"
+
+
+
+
+[[mods.entrypoints]]
+modId      = "easaddon"
+type       = "main"
+entrypoint = "com.burrows.easaddon.EASAddon"
+
+
+[[dependencies.easaddon]]
+modId        = "neoforge"
+type         = "required"
+versionRange = "[21.1.0,22.0)"
+ordering     = "NONE"
+side         = "BOTH"
+
+[[dependencies.easaddon]]
+modId        = "minecraft"
+type         = "required"
+versionRange = "[1.21.1,1.22)"
+ordering     = "NONE"
+side         = "BOTH"

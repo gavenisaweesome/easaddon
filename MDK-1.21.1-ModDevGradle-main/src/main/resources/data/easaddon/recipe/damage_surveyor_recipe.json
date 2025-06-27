@@ -1,0 +1,20 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+
+  "pattern": [
+    "CP ",
+    "IS ",
+    "  S"
+  ],
+  "key": {
+    "C": { "item": "minecraft:compass"   },
+    "P": { "item": "minecraft:paper"     },
+    "I": { "item": "minecraft:iron_ingot"},
+    "S": { "item": "minecraft:stick"     }
+  },
+  "result": {
+    "count": 1,
+    "id": "easaddon:damage_surveyor"
+  }
+}
